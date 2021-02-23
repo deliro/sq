@@ -1,0 +1,17 @@
+[
+  {
+    "email": "asdf",
+    "password": "asdf",
+    "flags": 0
+  },
+  {
+    "email": "xxx",
+    "password": "yyy",
+    "flags": 1
+  },
+  {
+    "email": "qqq",
+    "password": "www",
+    "flags": 3
+  }
+]
