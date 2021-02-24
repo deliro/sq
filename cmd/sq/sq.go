@@ -142,7 +142,7 @@ Avg rent time: %s`,
 
 type AccountList struct {
 	free         []*Account
-	accounts     []*Account
+	accounts     map[string]*Account
 	waiters      []*waiter
 	lock         *sync.Mutex
 	stats        *stats
@@ -153,7 +153,7 @@ type AccountList struct {
 func NewAccountList(rentTimeout int) *AccountList {
 	return &AccountList{
 		free:     make([]*Account, 0),
-		accounts: make([]*Account, 0),
+		accounts: make(map[string]*Account),
 		waiters:  make([]*waiter, 0),
 		lock:     &sync.Mutex{},
 		stats: &stats{
@@ -188,7 +188,9 @@ func (a *AccountList) Load() {
 	}
 
 	a.free = accs
-	a.accounts = accs
+	for _, acc := range accs {
+		a.accounts[acc.Email] = acc
+	}
 }
 
 func (a *AccountList) insertWaiter(w *waiter) {
@@ -299,13 +301,13 @@ func (a *AccountList) Put(acc *Account) {
 }
 
 func (a *AccountList) PutBack(email string) bool {
-	for _, v := range a.accounts {
-		if v.Email == email {
-			a.Put(v)
-			return true
-		}
+	acc, ok := a.accounts[email]
+	if !ok {
+		return false
 	}
-	return false
+
+	a.Put(acc)
+	return true
 }
 
 func (a *AccountList) returnBack(acc *Account) {
