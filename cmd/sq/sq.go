@@ -167,7 +167,7 @@ type AccountList struct {
 	free         []*Account
 	accounts     map[string]*Account
 	waiters      []*waiter
-	lock         *sync.Mutex
+	lock         sync.Mutex
 	stats        *stats
 	rentTimeout  int
 	rentChannels map[string]chan struct{}
@@ -179,7 +179,6 @@ func NewAccountList(rentTimeout int) *AccountList {
 		free:     make([]*Account, 0),
 		accounts: make(map[string]*Account),
 		waiters:  make([]*waiter, 0),
-		lock:     &sync.Mutex{},
 		stats: &stats{
 			waiting:        0,
 			done:           0,
