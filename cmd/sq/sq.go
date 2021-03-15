@@ -37,9 +37,12 @@ type stats struct {
 	returns        int
 	rentTimes      []time.Duration
 	rentAcquired   map[string]time.Time
+	mu             sync.Mutex
 }
 
 func (s *stats) addDuration(priority int, dur time.Duration) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	s.timeByPriority[priority] = append(s.timeByPriority[priority], dur)
 	if len(s.timeByPriority[priority]) > 10000 {
 		s.timeByPriority[priority] = s.timeByPriority[priority][1:]
@@ -47,10 +50,14 @@ func (s *stats) addDuration(priority int, dur time.Duration) {
 }
 
 func (s *stats) rentStarted(email string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	s.rentAcquired[email] = time.Now()
 }
 
 func (s *stats) rentFinished(email string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	v, ok := s.rentAcquired[email]
 	if !ok {
 		return
@@ -64,26 +71,38 @@ func (s *stats) rentFinished(email string) {
 }
 
 func (s *stats) addWaiting() {
+	s.mu.Lock()
 	s.waiting++
+	s.mu.Unlock()
 }
 
 func (s *stats) removeWaiting() {
+	s.mu.Lock()
 	s.waiting--
+	s.mu.Unlock()
 }
 
 func (s *stats) markDone() {
+	s.mu.Lock()
 	s.done++
+	s.mu.Unlock()
 }
 
 func (s *stats) returnedByTimer() {
+	s.mu.Lock()
 	s.timeouts++
+	s.mu.Unlock()
 }
 
 func (s *stats) returnedByUser() {
+	s.mu.Lock()
 	s.returns++
+	s.mu.Unlock()
 }
 
 func (s *stats) AvgWaitBy(priority int) time.Duration {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	durations, ok := s.timeByPriority[priority]
 	if !ok || len(durations) == 0 {
 		return time.Duration(0)
@@ -98,6 +117,8 @@ func (s *stats) AvgWaitBy(priority int) time.Duration {
 }
 
 func (s *stats) AvgWait() time.Duration {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	sum := time.Duration(0)
 	i := 0
 	for _, durations := range s.timeByPriority {
@@ -115,6 +136,8 @@ func (s *stats) AvgWait() time.Duration {
 }
 
 func (s *stats) AvgRentTime() time.Duration {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	sum := time.Duration(0)
 
 	if len(s.rentTimes) == 0 {
@@ -148,6 +171,7 @@ type AccountList struct {
 	stats        *stats
 	rentTimeout  int
 	rentChannels map[string]chan struct{}
+	rentMutex    sync.Mutex
 }
 
 func NewAccountList(rentTimeout int) *AccountList {
@@ -194,18 +218,18 @@ func (a *AccountList) Load() {
 }
 
 func (a *AccountList) insertWaiter(w *waiter) {
+	a.lock.Lock()
+	defer a.lock.Unlock()
 	i := sort.Search(len(a.waiters), func(i int) bool {
 		return a.waiters[i].priority <= w.priority
 	})
 
-	a.lock.Lock()
 	a.waiters = append(a.waiters, nil)
 	copy(a.waiters[i+1:], a.waiters[i:])
 	a.waiters[i] = w
 	if len(a.waiters) > a.stats.maxWaiters {
 		a.stats.maxWaiters = len(a.waiters)
 	}
-	a.lock.Unlock()
 }
 
 func (a *AccountList) dropWaiter(w *waiter) {
@@ -241,7 +265,9 @@ func (a *AccountList) getByPred(priority int, pred func(acc *Account) bool) *Acc
 				a.stats.addDuration(priority, duration)
 				a.stats.markDone()
 				a.stats.removeWaiting()
+				a.rentMutex.Lock()
 				a.rentChannels[acc.Email] = make(chan struct{})
+				a.rentMutex.Unlock()
 				a.stats.rentStarted(acc.Email)
 				go a.returnBack(acc)
 				a.lock.Unlock()
@@ -285,7 +311,9 @@ func (a *AccountList) Put(acc *Account) {
 
 	a.stats.rentFinished(acc.Email)
 
+	a.rentMutex.Lock()
 	rentChan, ok := a.rentChannels[acc.Email]
+	a.rentMutex.Unlock()
 	if ok {
 		select {
 		case rentChan <- struct{}{}:
@@ -313,7 +341,9 @@ func (a *AccountList) PutBack(email string) bool {
 func (a *AccountList) returnBack(acc *Account) {
 	log.Println("will return", acc, "back in", a.rentTimeout, "seconds")
 	timer := time.NewTimer(time.Second * time.Duration(a.rentTimeout))
+	a.rentMutex.Lock()
 	rentChan, ok := a.rentChannels[acc.Email]
+	a.rentMutex.Unlock()
 	if !ok {
 		log.Fatal("WTF")
 	}
@@ -387,7 +417,7 @@ func main() {
 			writer.WriteHeader(422)
 			return
 		}
-		writer.Write([]byte("ok"))
+		_, _ = writer.Write([]byte("ok"))
 	})
 
 	log.Println("Listening @ 8000 port")
