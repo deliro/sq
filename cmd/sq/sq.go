@@ -26,6 +26,7 @@ func NewAccount(email, password string, flags int) *Account {
 type waiter struct {
 	priority int
 	wakeUp   chan struct{}
+	pred     func(acc *Account) bool
 }
 
 type stats struct {
@@ -248,6 +249,7 @@ func (a *AccountList) getByPred(priority int, pred func(acc *Account) bool) *Acc
 	w := &waiter{
 		priority: priority,
 		wakeUp:   make(chan struct{}),
+		pred:     pred,
 	}
 	a.stats.addWaiting()
 	start := time.Now()
@@ -279,14 +281,9 @@ func (a *AccountList) getByPred(priority int, pred func(acc *Account) bool) *Acc
 	}
 }
 
-func (a *AccountList) GetAny() *Account {
-	return a.getByPred(0, func(acc *Account) bool {
-		return true
-	})
-}
-
 func (a *AccountList) GetByEmail(email string) *Account {
-	return a.getByPred(10, func(acc *Account) bool {
+	const emailPriority = 10
+	return a.getByPred(emailPriority, func(acc *Account) bool {
 		return acc.Email == email
 	})
 }
@@ -322,8 +319,10 @@ func (a *AccountList) Put(acc *Account) {
 
 	a.free = append(a.free, acc)
 	for _, w := range a.waiters {
-		w.wakeUp <- struct{}{}
-		time.Sleep(3 * time.Millisecond)
+		if w.pred(acc) {
+			w.wakeUp <- struct{}{}
+			break
+		}
 	}
 }
 
@@ -364,22 +363,25 @@ type PutRequest struct {
 	Email string `json:"email"`
 }
 
-func main() {
-	timeout := 0
-	flag.IntVar(&timeout, "timeout", 10*60, "Timeout to get the account back (in seconds)")
-	flag.Parse()
+type Endpoints struct {
+	list *AccountList
+	bind string
+}
 
-	list := NewAccountList(timeout)
-	list.Load()
+func NewEndpoints(list *AccountList, bind string) *Endpoints {
+	return &Endpoints{list: list, bind: bind}
+}
 
-	http.HandleFunc("/stats", func(writer http.ResponseWriter, request *http.Request) {
-		_, err := writer.Write([]byte(list.stats.Pretty()))
+func (h *Endpoints) buildRoutes() http.Handler {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/stats", func(writer http.ResponseWriter, request *http.Request) {
+		_, err := writer.Write([]byte(h.list.stats.Pretty()))
 		if err != nil {
 			log.Println("Error in /stats", err)
 		}
 	})
 
-	http.HandleFunc("/get", func(writer http.ResponseWriter, request *http.Request) {
+	mux.HandleFunc("/get", func(writer http.ResponseWriter, request *http.Request) {
 		req := &GetRequest{}
 		if err := json.NewDecoder(request.Body).Decode(&req); err != nil {
 			log.Println(err)
@@ -389,9 +391,9 @@ func main() {
 
 		acc := (*Account)(nil)
 		if req.Email != "" {
-			acc = list.GetByEmail(req.Email)
+			acc = h.list.GetByEmail(req.Email)
 		} else {
-			acc = list.GetByFlags(req.Flags)
+			acc = h.list.GetByFlags(req.Flags)
 		}
 
 		b, err := json.Marshal(acc)
@@ -404,21 +406,36 @@ func main() {
 		}
 	})
 
-	http.HandleFunc("/put", func(writer http.ResponseWriter, request *http.Request) {
+	mux.HandleFunc("/put", func(writer http.ResponseWriter, request *http.Request) {
 		req := &PutRequest{}
 		if err := json.NewDecoder(request.Body).Decode(&req); err != nil {
 			log.Println(err)
 			writer.WriteHeader(400)
 			return
 		}
-		ok := list.PutBack(req.Email)
+		ok := h.list.PutBack(req.Email)
 		if !ok {
 			writer.WriteHeader(422)
 			return
 		}
 		_, _ = writer.Write([]byte("ok"))
 	})
+	return mux
+}
 
-	log.Println("Listening @ 8000 port")
-	log.Fatal(http.ListenAndServe(":8000", nil))
+func (h *Endpoints) RunServer() error {
+	mux := h.buildRoutes()
+	return http.ListenAndServe(h.bind, mux)
+}
+
+func main() {
+	timeout := 0
+	flag.IntVar(&timeout, "timeout", 10*60, "Timeout to get the account back (in seconds)")
+	flag.Parse()
+	list := NewAccountList(timeout)
+	list.Load()
+	bind := ":8000"
+	log.Println("Listening @", bind)
+	endpoints := NewEndpoints(list, bind)
+	log.Fatal(endpoints.RunServer())
 }
